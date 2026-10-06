@@ -155,9 +155,11 @@ def build_excel(data):
 
         # Content rows
         content_buffer = []
+        in_table = False
         for raw_line in lines:
             line = raw_line.strip()
             if line == "" or re.match(r'^---+$', line):
+                in_table = False
                 if content_buffer:
                     # Write buffered content
                     text = "\n".join(content_buffer)
@@ -216,12 +218,49 @@ def build_excel(data):
                 content_buffer.append(strip_markdown(line))
                 continue
 
-            # Table rows — simplified
+            # Table rows — render as real table
             if line.startswith("|") and line.endswith("|"):
                 if re.match(r'^\|[-|\s]+\|$', line):
                     continue
+                # Flush buffer before table
+                if content_buffer:
+                    text = "\n".join(content_buffer)
+                    ws.merge_cells(f"A{row}:B{row}")
+                    cc = ws[f"A{row}"]
+                    cc.value = text
+                    cc.font = Font(name="Arial", size=10, color=TEXT_DARK)
+                    cc.fill = PatternFill("solid", fgColor=WHITE)
+                    cc.alignment = Alignment(horizontal="left", vertical="top", indent=2, wrap_text=True)
+                    cc.border = Border(left=side(), right=side(), bottom=side(GREY_BORDER, "hair"))
+                    est_lines = max(len(text.split("\n")), len(text) // 90 + 1)
+                    ws.row_dimensions[row].height = max(15, est_lines * 15)
+                    row += 1
+                    content_buffer = []
                 cells = [c.strip() for c in line.split("|") if c.strip()]
-                content_buffer.append("  |  ".join(cells))
+                # Detect header row by checking if previous non-empty line was a separator
+                # We track this with a local variable in the outer loop
+                is_header = not in_table
+                in_table = True
+                for ci, cell_val in enumerate(cells):
+                    col_letter = get_column_letter(ci + 1)
+                    # Expand columns if needed
+                    if ci == 0:
+                        ws.column_dimensions["A"].width = max(ws.column_dimensions["A"].width, 24)
+                    elif ci == 1:
+                        ws.column_dimensions["B"].width = max(ws.column_dimensions["B"].width, 30)
+                    else:
+                        ws.column_dimensions[col_letter].width = 20
+                    tc = ws.cell(row=row, column=ci+1, value=strip_markdown(cell_val))
+                    if is_header:
+                        tc.font = Font(name="Arial", size=10, bold=True, color=WHITE)
+                        tc.fill = PatternFill("solid", fgColor=PURPLE_MID)
+                    else:
+                        tc.font = Font(name="Arial", size=10, color=TEXT_DARK)
+                        tc.fill = PatternFill("solid", fgColor=PURPLE_PALE if row % 2 == 0 else WHITE)
+                    tc.alignment = Alignment(horizontal="left", vertical="center", indent=1, wrap_text=True)
+                    tc.border = border()
+                ws.row_dimensions[row].height = 20
+                row += 1
                 continue
 
             content_buffer.append(strip_markdown(line))
