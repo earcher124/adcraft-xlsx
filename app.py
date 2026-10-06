@@ -1,298 +1,312 @@
 from flask import Flask, request, jsonify, send_file
-import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl import Workbook
+from openpyxl.styles import (
+    PatternFill, Font, Alignment, Border, Side, GradientFill
+)
 from openpyxl.utils import get_column_letter
 import io
+import re
+import base64
 
 app = Flask(__name__)
 
-# ── Color palette ──────────────────────────────────────────────
-NAVY   = "4A235A"   # Plum (headers, banners)
-TEAL   = "7B4F8B"   # Mid-purple (secondary headers)
-GOLD   = "C9956B"   # Warm terracotta accent
-LIGHT  = "F5EFF8"   # Pale lavender tint (label cells)
-WHITE  = "FBF7F4"   # Warm cream (main cell background)
-GRAY   = "EDE5F0"   # Soft purple-gray (alternating rows)
-DKGRAY = "4A235A"   # Plum (body text on light)
+PURPLE_DARK  = "4C1D95"
+PURPLE_MID   = "6B21A8"
+PURPLE_LIGHT = "EDE9FE"
+PURPLE_PALE  = "FAF8FF"
+WHITE        = "FFFFFF"
+GREY_LIGHT   = "F3F4F6"
+GREY_BORDER  = "DDD6FE"
+TEXT_DARK    = "1A1A1A"
+TEXT_MID     = "374151"
 
-def make_border(style="thin"):
-    s = Side(style=style)
+def side(color=GREY_BORDER, style="thin"):
+    return Side(border_style=style, color=color)
+
+def border(color=GREY_BORDER):
+    s = side(color)
     return Border(left=s, right=s, top=s, bottom=s)
 
-def hdr(ws, row, col, value, bg=NAVY, fg=WHITE, bold=True, size=11):
-    c = ws.cell(row=row, column=col, value=value)
-    c.font = Font(name="Arial", bold=bold, color=fg, size=size)
-    c.fill = PatternFill("solid", fgColor=bg)
-    c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    c.border = make_border()
-    return c
+def parse_plan(text):
+    """Parse markdown plan text into structured sections."""
+    sections = []
+    current_section = None
+    current_lines = []
 
-def cell(ws, row, col, value="", bold=False, color=DKGRAY, bg=WHITE, align="left", wrap=True):
-    c = ws.cell(row=row, column=col, value=value)
-    c.font = Font(name="Arial", bold=bold, color=color, size=10)
-    c.fill = PatternFill("solid", fgColor=bg)
-    c.alignment = Alignment(horizontal=align, vertical="center", wrap_text=wrap)
-    c.border = make_border()
-    return c
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
 
-def set_col_widths(ws, widths):
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
+        if re.match(r'^## ', line):
+            if current_section is not None:
+                sections.append((current_section, current_lines))
+            current_section = line.replace("## ", "").strip()
+            current_lines = []
+        elif re.match(r'^# ', line):
+            if current_section is not None:
+                sections.append((current_section, current_lines))
+            current_section = line.replace("# ", "").strip()
+            current_lines = []
+        else:
+            current_lines.append(raw_line)
 
-def freeze(ws, ref="A2"):
-    ws.freeze_panes = ref
+    if current_section is not None:
+        sections.append((current_section, current_lines))
+    elif current_lines:
+        sections.append(("Plan Output", current_lines))
 
+    return sections
 
-# ══════════════════════════════════════════════════════════════
-#  SHEET 1 — Business Summary
-# ══════════════════════════════════════════════════════════════
-def build_summary(wb, d):
-    ws = wb.create_sheet("Business Summary")
+def strip_markdown(text):
+    """Remove markdown formatting for cell content."""
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'^#+\s*', '', text)
+    return text.strip()
+
+def build_excel(data):
+    wb = Workbook()
+
+    # ── Tab 1: Ad Plan ──────────────────────────────────────────────
+    ws = wb.active
+    ws.title = "Ad Plan"
     ws.sheet_view.showGridLines = False
 
-    ws.merge_cells("A1:B1")
-    t = ws["A1"]
-    t.value = "AdCraft — Advertising Plan"
-    t.font = Font(name="Arial", bold=True, color=WHITE, size=16)
-    t.fill = PatternFill("solid", fgColor=NAVY)
-    t.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 36
+    # Column widths
+    ws.column_dimensions["A"].width = 24
+    ws.column_dimensions["B"].width = 72
 
-    rows = [
-        ("Business Type",       d.get("business_type", "")),
-        ("Primary Goal",        d.get("primary_goal", "")),
-        ("Target Customer",     d.get("target_customer", "")),
-        ("Geography",           d.get("geography", "")),
-        ("Monthly Budget",      f"${d.get('monthly_budget', 0):,.0f}"),
-        ("Monthly Revenue",     f"${d.get('monthly_revenue', 0):,.0f}"),
-        ("Budget Tier",         d.get("budget_tier", "")),
-        ("Current Advertising", d.get("current_advertising", "None")),
+    row = 1
+
+    # Title banner
+    ws.merge_cells(f"A{row}:B{row}")
+    cell = ws[f"A{row}"]
+    cell.value = "AdCraft — Advertising Plan"
+    cell.font = Font(name="Arial", size=16, bold=True, color=WHITE)
+    cell.fill = PatternFill("solid", fgColor=PURPLE_DARK)
+    cell.alignment = Alignment(horizontal="left", vertical="center", indent=2)
+    ws.row_dimensions[row].height = 36
+    row += 1
+
+    # Plan name subtitle
+    ws.merge_cells(f"A{row}:B{row}")
+    cell = ws[f"A{row}"]
+    cell.value = data.get("Plan Name", "")
+    cell.font = Font(name="Arial", size=13, bold=True, color=WHITE)
+    cell.fill = PatternFill("solid", fgColor=PURPLE_MID)
+    cell.alignment = Alignment(horizontal="left", vertical="center", indent=2)
+    ws.row_dimensions[row].height = 28
+    row += 1
+
+    # Spacer
+    ws.row_dimensions[row].height = 8
+    row += 1
+
+    # Metadata fields
+    meta_fields = [
+        ("Business Name",    data.get("Business Name", "")),
+        ("Primary Goal",     data.get("Primary Goal", "")),
+        ("Geography",        data.get("Geography", "")),
+        ("Monthly Ad Budget",data.get("Monthly Ad Budget", "")),
+        ("Budget Tier",      data.get("Budget Tier", "")),
+        ("Status",           data.get("Status", "")),
     ]
-    for i, (label, val) in enumerate(rows, start=2):
-        cell(ws, i, 1, label, bold=True, bg=LIGHT)
-        cell(ws, i, 2, val, bg=WHITE)
-        ws.row_dimensions[i].height = 22
 
-    set_col_widths(ws, [28, 50])
+    for i, (label, value) in enumerate(meta_fields):
+        fill_color = PURPLE_PALE if i % 2 == 0 else WHITE
+        # Label cell
+        lc = ws[f"A{row}"]
+        lc.value = label
+        lc.font = Font(name="Arial", size=10, bold=True, color=PURPLE_MID)
+        lc.fill = PatternFill("solid", fgColor=fill_color)
+        lc.alignment = Alignment(horizontal="left", vertical="center", indent=2, wrap_text=True)
+        lc.border = border()
+        ws.row_dimensions[row].height = 20
 
+        # Value cell
+        vc = ws[f"B{row}"]
+        vc.value = str(value) if value else "—"
+        vc.font = Font(name="Arial", size=10, color=TEXT_DARK)
+        vc.fill = PatternFill("solid", fgColor=fill_color)
+        vc.alignment = Alignment(horizontal="left", vertical="center", indent=2, wrap_text=True)
+        vc.border = border()
+        row += 1
 
-# ══════════════════════════════════════════════════════════════
-#  SHEET 2 — Channel Plan
-# ══════════════════════════════════════════════════════════════
-def build_channel_plan(wb, d):
-    ws = wb.create_sheet("Channel Plan")
-    ws.sheet_view.showGridLines = False
+    # Spacer
+    ws.row_dimensions[row].height = 12
+    row += 1
 
-    headers = ["Channel", "Monthly Budget", "% of Budget", "Primary KPI",
-               "Expected Reach/Clicks", "Est. Cost Per Result", "Notes"]
-    widths  = [22, 16, 14, 20, 22, 20, 40]
+    # Plan content sections
+    plan_text = data.get("Plan Output", "")
+    sections = parse_plan(plan_text)
 
-    for i, h in enumerate(headers, 1):
-        hdr(ws, 1, i, h)
-    ws.row_dimensions[1].height = 28
-    freeze(ws)
+    if not sections:
+        sections = [("Plan Output", plan_text.split("\n"))]
 
-    channels = d.get("channels", [])
-    total_budget = d.get("monthly_budget", 0)
+    for section_title, lines in sections:
+        # Section header row
+        ws.merge_cells(f"A{row}:B{row}")
+        hc = ws[f"A{row}"]
+        hc.value = section_title
+        hc.font = Font(name="Arial", size=11, bold=True, color=WHITE)
+        hc.fill = PatternFill("solid", fgColor=PURPLE_MID)
+        hc.alignment = Alignment(horizontal="left", vertical="center", indent=2)
+        ws.row_dimensions[row].height = 24
+        row += 1
 
-    for r, ch in enumerate(channels, start=2):
-        bg = GRAY if r % 2 == 0 else WHITE
-        budget_val = ch.get("monthly_budget", 0)
-        pct = (budget_val / total_budget * 100) if total_budget else 0
-        row_data = [
-            ch.get("channel", ""),
-            budget_val,
-            f"{pct:.0f}%",
-            ch.get("kpi", ""),
-            ch.get("expected_reach", ""),
-            ch.get("cost_per_result", ""),
-            ch.get("notes", ""),
-        ]
-        for c_idx, val in enumerate(row_data, 1):
-            cell(ws, r, c_idx, val, bg=bg,
-                 align="right" if c_idx == 2 else "left")
-        ws.row_dimensions[r].height = 22
+        # Content rows
+        content_buffer = []
+        for raw_line in lines:
+            line = raw_line.strip()
+            if line == "" or re.match(r'^---+$', line):
+                if content_buffer:
+                    # Write buffered content
+                    text = "\n".join(content_buffer)
+                    ws.merge_cells(f"A{row}:B{row}")
+                    cc = ws[f"A{row}"]
+                    cc.value = text
+                    cc.font = Font(name="Arial", size=10, color=TEXT_DARK)
+                    cc.fill = PatternFill("solid", fgColor=WHITE)
+                    cc.alignment = Alignment(horizontal="left", vertical="top", indent=2, wrap_text=True)
+                    cc.border = Border(
+                        left=side(), right=side(),
+                        bottom=side(GREY_BORDER, "hair")
+                    )
+                    # Estimate row height
+                    est_lines = max(len(text.split("\n")), len(text) // 90 + 1)
+                    ws.row_dimensions[row].height = max(15, est_lines * 15)
+                    row += 1
+                    content_buffer = []
+                continue
 
-    last = len(channels) + 2
-    cell(ws, last, 1, "TOTAL", bold=True, bg=NAVY, color=WHITE, align="center")
-    cell(ws, last, 2, sum(c.get("monthly_budget", 0) for c in channels),
-         bold=True, bg=NAVY, color=WHITE, align="right")
-    for col in range(3, 8):
-        cell(ws, last, col, "", bg=NAVY)
-    ws.row_dimensions[last].height = 24
+            # Handle ### subheadings inline
+            if re.match(r'^### ', line):
+                if content_buffer:
+                    text = "\n".join(content_buffer)
+                    ws.merge_cells(f"A{row}:B{row}")
+                    cc = ws[f"A{row}"]
+                    cc.value = text
+                    cc.font = Font(name="Arial", size=10, color=TEXT_DARK)
+                    cc.fill = PatternFill("solid", fgColor=WHITE)
+                    cc.alignment = Alignment(horizontal="left", vertical="top", indent=2, wrap_text=True)
+                    cc.border = Border(left=side(), right=side(), bottom=side(GREY_BORDER, "hair"))
+                    est_lines = max(len(text.split("\n")), len(text) // 90 + 1)
+                    ws.row_dimensions[row].height = max(15, est_lines * 15)
+                    row += 1
+                    content_buffer = []
 
-    set_col_widths(ws, widths)
+                subhead = line.replace("### ", "").strip()
+                ws.merge_cells(f"A{row}:B{row}")
+                sc = ws[f"A{row}"]
+                sc.value = subhead
+                sc.font = Font(name="Arial", size=10, bold=True, color=PURPLE_DARK)
+                sc.fill = PatternFill("solid", fgColor=PURPLE_LIGHT)
+                sc.alignment = Alignment(horizontal="left", vertical="center", indent=2)
+                ws.row_dimensions[row].height = 20
+                row += 1
+                continue
 
+            # Handle bullet points
+            bullet_match = re.match(r'^[-•]\s+(.+)', line)
+            if bullet_match:
+                content_buffer.append("• " + strip_markdown(bullet_match.group(1)))
+                continue
 
-# ══════════════════════════════════════════════════════════════
-#  SHEET 3 — Excluded Channels
-# ══════════════════════════════════════════════════════════════
-def build_excluded(wb, d):
-    ws = wb.create_sheet("Excluded Channels")
-    ws.sheet_view.showGridLines = False
+            numbered_match = re.match(r'^\d+\.\s+(.+)', line)
+            if numbered_match:
+                content_buffer.append(strip_markdown(line))
+                continue
 
-    hdr(ws, 1, 1, "Channel", bg=TEAL)
-    hdr(ws, 1, 2, "Reason Not Recommended", bg=TEAL)
-    ws.row_dimensions[1].height = 28
-    freeze(ws)
+            # Table rows — simplified
+            if line.startswith("|") and line.endswith("|"):
+                if re.match(r'^\|[-|\s]+\|$', line):
+                    continue
+                cells = [c.strip() for c in line.split("|") if c.strip()]
+                content_buffer.append("  |  ".join(cells))
+                continue
 
-    excluded = d.get("excluded_channels", [])
-    for r, ex in enumerate(excluded, start=2):
-        bg = GRAY if r % 2 == 0 else WHITE
-        cell(ws, r, 1, ex.get("channel", ""), bg=bg)
-        cell(ws, r, 2, ex.get("reason", ""), bg=bg)
-        ws.row_dimensions[r].height = 22
+            content_buffer.append(strip_markdown(line))
 
-    set_col_widths(ws, [28, 60])
+        # Flush remaining buffer
+        if content_buffer:
+            text = "\n".join(content_buffer)
+            ws.merge_cells(f"A{row}:B{row}")
+            cc = ws[f"A{row}"]
+            cc.value = text
+            cc.font = Font(name="Arial", size=10, color=TEXT_DARK)
+            cc.fill = PatternFill("solid", fgColor=WHITE)
+            cc.alignment = Alignment(horizontal="left", vertical="top", indent=2, wrap_text=True)
+            cc.border = Border(left=side(), right=side(), bottom=side(GREY_BORDER, "hair"))
+            est_lines = max(len(text.split("\n")), len(text) // 90 + 1)
+            ws.row_dimensions[row].height = max(15, est_lines * 15)
+            row += 1
 
+        # Section spacer
+        ws.row_dimensions[row].height = 10
+        row += 1
 
-# ══════════════════════════════════════════════════════════════
-#  SHEET 4 — Monthly Tracker
-# ══════════════════════════════════════════════════════════════
-def build_tracker(wb, d):
-    ws = wb.create_sheet("Monthly Tracker")
-    ws.sheet_view.showGridLines = False
+    # ── Tab 2: Raw Data ─────────────────────────────────────────────
+    ws2 = wb.create_sheet("Raw Data")
+    ws2.sheet_view.showGridLines = False
+    ws2.column_dimensions["A"].width = 28
+    ws2.column_dimensions["B"].width = 100
 
-    channels = d.get("channels", [])
-    months = ["Month 1", "Month 2", "Month 3"]
+    # Header
+    for col, label in enumerate(["Field", "Value"], 1):
+        c = ws2.cell(row=1, column=col, value=label)
+        c.font = Font(name="Arial", size=10, bold=True, color=WHITE)
+        c.fill = PatternFill("solid", fgColor=PURPLE_DARK)
+        c.alignment = Alignment(horizontal="left", vertical="center", indent=2)
+        ws2.row_dimensions[1].height = 22
 
-    hdr(ws, 1, 1, "Channel")
-    hdr(ws, 1, 2, "KPI")
-    col = 3
-    for m in months:
-        hdr(ws, 1, col,   f"{m} — Planned")
-        hdr(ws, 1, col+1, f"{m} — Actual")
-        hdr(ws, 1, col+2, f"{m} — Variance")
-        col += 3
-    ws.row_dimensions[1].height = 28
-    freeze(ws)
+    raw_fields = [
+        "Plan Name", "Business Name", "Primary Goal",
+        "Geography", "Monthly Ad Budget", "Budget Tier", "Status", "Plan Output"
+    ]
+    for i, field in enumerate(raw_fields):
+        r = i + 2
+        fill = PURPLE_PALE if i % 2 == 0 else WHITE
+        lc = ws2.cell(row=r, column=1, value=field)
+        lc.font = Font(name="Arial", size=9, bold=True, color=PURPLE_MID)
+        lc.fill = PatternFill("solid", fgColor=fill)
+        lc.alignment = Alignment(horizontal="left", vertical="top", indent=2)
+        lc.border = border()
 
-    for r, ch in enumerate(channels, start=2):
-        bg = GRAY if r % 2 == 0 else WHITE
-        cell(ws, r, 1, ch.get("channel", ""), bg=bg)
-        cell(ws, r, 2, ch.get("kpi", ""), bg=bg)
-        col = 3
-        for _ in months:
-            cell(ws, r, col,   ch.get("expected_reach", ""), bg=bg, align="right")
-            cell(ws, r, col+1, "", bg=LIGHT)
-            c = ws.cell(row=r, column=col+2)
-            c.value = f"={get_column_letter(col+1)}{r}-{get_column_letter(col)}{r}"
-            c.font = Font(name="Arial", size=10, color=DKGRAY)
-            c.fill = PatternFill("solid", fgColor=bg)
-            c.alignment = Alignment(horizontal="right", vertical="center")
-            c.border = make_border()
-            col += 3
-        ws.row_dimensions[r].height = 22
+        vc = ws2.cell(row=r, column=2, value=str(data.get(field, "")))
+        vc.font = Font(name="Arial", size=9, color=TEXT_DARK)
+        vc.fill = PatternFill("solid", fgColor=fill)
+        vc.alignment = Alignment(horizontal="left", vertical="top", indent=2, wrap_text=True)
+        vc.border = border()
 
-    widths = [22, 20] + [18, 18, 16] * 3
-    set_col_widths(ws, widths)
+        text = str(data.get(field, ""))
+        est = max(len(text.split("\n")), len(text) // 110 + 1)
+        ws2.row_dimensions[r].height = max(15, est * 14)
 
+    # Save to bytes
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
 
-# ══════════════════════════════════════════════════════════════
-#  SHEET 5 — Benchmarks
-# ══════════════════════════════════════════════════════════════
-def build_benchmarks(wb, d):
-    ws = wb.create_sheet("Benchmarks")
-    ws.sheet_view.showGridLines = False
-
-    headers = ["Channel", "Avg CTR", "Avg CPC", "Avg CPM", "Avg Conv Rate", "Notes"]
-    widths  = [22, 14, 14, 14, 16, 50]
-    for i, h in enumerate(headers, 1):
-        hdr(ws, 1, i, h)
-    ws.row_dimensions[1].height = 28
-    freeze(ws)
-
-    benchmarks = d.get("benchmarks", [])
-    for r, b in enumerate(benchmarks, start=2):
-        bg = GRAY if r % 2 == 0 else WHITE
-        row_data = [
-            b.get("channel", ""),
-            b.get("avg_ctr", ""),
-            b.get("avg_cpc", ""),
-            b.get("avg_cpm", ""),
-            b.get("avg_conv_rate", ""),
-            b.get("notes", ""),
-        ]
-        for c_idx, val in enumerate(row_data, 1):
-            cell(ws, r, c_idx, val, bg=bg)
-        ws.row_dimensions[r].height = 22
-
-    set_col_widths(ws, widths)
-
-
-# ══════════════════════════════════════════════════════════════
-#  SHEET 6 — 90-Day Launch Plan
-# ══════════════════════════════════════════════════════════════
-def build_launch_plan(wb, d):
-    ws = wb.create_sheet("90-Day Launch Plan")
-    ws.sheet_view.showGridLines = False
-
-    headers = ["Week", "Phase", "Action Item", "Owner", "Status"]
-    widths  = [10, 20, 50, 16, 14]
-    for i, h in enumerate(headers, 1):
-        hdr(ws, 1, i, h)
-    ws.row_dimensions[1].height = 28
-    freeze(ws)
-
-    launch_items = d.get("launch_plan", [])
-    for r, item in enumerate(launch_items, start=2):
-        bg = GRAY if r % 2 == 0 else WHITE
-        row_data = [
-            item.get("week", ""),
-            item.get("phase", ""),
-            item.get("action", ""),
-            item.get("owner", "You"),
-            item.get("status", "To Do"),
-        ]
-        for c_idx, val in enumerate(row_data, 1):
-            cell(ws, r, c_idx, val, bg=bg)
-        ws.row_dimensions[r].height = 22
-
-    set_col_widths(ws, widths)
-
-
-# ══════════════════════════════════════════════════════════════
-#  MAIN ENDPOINT
-# ══════════════════════════════════════════════════════════════
 @app.route("/generate", methods=["POST"])
 def generate():
-    try:
-        data = request.get_json(force=True)
-        if not data:
-            return jsonify({"error": "No JSON body received"}), 400
+    data = request.get_json(force=True)
+    if not data:
+        return jsonify({"error": "No data"}), 400
 
-        wb = openpyxl.Workbook()
-        wb.remove(wb.active)
+    buf = build_excel(data)
+    filename = re.sub(r'[^\w\s-]', '', data.get("Plan Name", "ad-plan")).strip().replace(" ", "-")
+    filename = f"{filename}-AdCraft.xlsx"
 
-        build_summary(wb, data)
-        build_channel_plan(wb, data)
-        build_excluded(wb, data)
-        build_tracker(wb, data)
-        build_benchmarks(wb, data)
-        build_launch_plan(wb, data)
-
-        buf = io.BytesIO()
-        wb.save(buf)
-        buf.seek(0)
-
-        biz = data.get("business_type", "AdCraft").replace(" ", "_")
-        filename = f"AdCraft_Plan_{biz}.xlsx"
-
-        return send_file(
-            buf,
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            as_attachment=True,
-            download_name=filename,
-        )
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+    return send_file(
+        buf,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=filename
+    )
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "AdCraft XLSX Generator"})
-
+    return jsonify({"status": "ok"})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=8080)
