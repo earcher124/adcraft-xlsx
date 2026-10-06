@@ -289,7 +289,13 @@ def build_excel(data):
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    data = request.get_json(force=True)
+    # Accept JSON, form data, or multipart
+    if request.content_type and "application/json" in request.content_type:
+        data = request.get_json(force=True)
+    else:
+        data = request.form.to_dict()
+        if not data:
+            data = request.get_json(force=True, silent=True)
     if not data:
         return jsonify({"error": "No data"}), 400
 
